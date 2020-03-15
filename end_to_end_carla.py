@@ -16,47 +16,19 @@ import cv2
 import time
 import random
 import math
+from agents.navigation.global_route_planner import GlobalRoutePlanner
+from agents.navigation.global_route_planner_dao import GlobalRoutePlannerDAO
 from collections import deque
 
-Setting_ACTIONS = ['forward','left','right', 'forward_left', 'forward_right', 'brake', 'brake_left', 'brake_right']
-
-
-class ACTIONS:
-    forward = 0
-    left = 1
-    right = 2
-    forward_left = 3
-    forward_right = 4
-    brake = 5
-    brake_left = 6
-    brake_right = 7
-    no_action = 8
-
-
-ACTION_CONTROL = {
-    0: [1, 0, 0],
-    1: [0, 0, -1],
-    2: [0, 0, 1],
-    3: [1, 0, -1],
-    4: [1, 0, 1],
-    5: [0, 1, 0],
-    6: [0, 1, -1],
-    7: [0, 1, 1],
-    8: None,
-}
-
-ACTIONS_NAMES = {
-    0: 'forward',
-    1: 'left',
-    2: 'right',
-    3: 'forward_left',
-    4: 'forward_right',
-    5: 'brake',
-    6: 'brake_left',
-    7: 'brake_right',
-    8: 'no_action',
-}
-
+actions = [[0., 0.,0.], [1.,0.,0], [0.5,0.,0], [0.25,0.,0],
+           [0., -1.,0], [1., -1.,0], [0.5, -1.,0.0], [0.25, -1.,0],
+           [0., -0.5,0], [1., -0.5,0], [0.5, -0.5,0.0], [0.25, -0.5,0],
+           [0., -0.25,0], [1.,  -0.25,0], [0.5,  -0.25,0.0], [0.25, -0.25,0],
+           [0., 0.25,0], [1.,  0.25,0], [0.5,  0.25,0.0], [0.25, 0.25,0],
+           [0., 0.5,0], [1., 0.5,0], [0.5, 0.5,0.0], [0.25, 0.5,0],
+           [0., 1.,0], [1., 1.,0], [0.5, 1.,0.0], [0.25, 1.,0],
+           [0., 0.,0.5], [0., 0.,0.25],[0., 0.,1.0],
+           [0., 0.,0.15], [0., 0.,0.35],[0., 0.,0.75]]
 REPLAY_MEMORY_SIZE = 5_000
 
 SHOW_PREVIEW = False
@@ -71,20 +43,21 @@ class CarEnv:
     im_width = IM_WIDTH
     im_height = IM_HEIGHT
     front_camera = None
-    action_space_size = len(Setting_ACTIONS)
+    action_space_size = len(actions)
 
-    def __init__(self,town='/Game/Carla/Maps/Town03'):
+    def __init__(self):
         self.arrive_target_location = False
         self.client = carla.Client("127.0.0.1", 2000)
         self.client.set_timeout(2.0)
-        self.client.load_world(town)
         self.world = self.client.get_world()
         self.blueprint_library = self.world.get_blueprint_library()
         self.model_3 = self.blueprint_library.filter("model3")[0]
-        self.actions = [getattr(ACTIONS, action) for action in Setting_ACTIONS]
-        self.spawn_points = self.world.get_map().get_spawn_points()[:10]  # some points to begin
-        self.end_points=self.world.get_map().get_spawn_points()[-10:]
+        self.actions = actions
+        self.map=self.world.get_map()
+        self.spawn_points = self.map.get_spawn_points()[:10]  # some points to begin
+        self.end_points=self.map.get_spawn_points()[-10:]
     def reset(self):
+        self.direction=0
         self.collision_hist = []
         self.actor_list = []
 
@@ -115,8 +88,11 @@ class CarEnv:
         self.arrive_target_location = False
         self.episode_start = time.time()
         self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
+        current_t = self.transform
+        v = self.vehicle.get_velocity()
+        measurements = self._get_measurements(current_t, self.target_location, v)
 
-        return self.front_camera
+        return self.front_camera,measurements
 
     def collision_data(self, event):
         self.collision_hist.append(event)
@@ -134,20 +110,32 @@ class CarEnv:
 
     def step(self, action):
 
-        if self.actions[action] != ACTIONS.no_action:
-            self.vehicle.apply_control(carla.VehicleControl(throttle=ACTION_CONTROL[self.actions[action]][0],
-                                                            steer=ACTION_CONTROL[self.actions[action]][
-                                                                      2] * self.STEER_AMT,
-                                                            brake=ACTION_CONTROL[self.actions[action]][1]))
+
+        throttle = self.actions[action][0]
+        steer = self.actions[action][1] * self.STEER_AMT
+        brake = self.actions[action][2]
+        if self.direction == 1:
+            steer=-1.0
+        elif self.direction == 2:
+            steer=1.0
+        elif self.direction ==3:
+            steer=0.0
+
+        self.vehicle.apply_control(carla.VehicleControl(throttle=throttle,
+                                                            steer=steer,
+                                                            brake=brake))
 
         v = self.vehicle.get_velocity()
         kmh = int(3.6 * math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2))
 
-        measurements = self.vehicle.get_transform()
+        current_t = self.vehicle.get_transform()
+
+        measurements = self._get_measurements(current_t,self.target_location,v)
+
         # Distance towards goal (in km)
-        d_x = measurements.location.x
-        d_y = measurements.location.y
-        d_z = measurements.location.z
+        d_x = current_t.location.x
+        d_y = current_t.location.y
+        d_z = current_t.location.z
         player_location = np.array([d_x, d_y, d_z])
         goal_location = np.array([self.target_location.location.x,
                                   self.target_location.location.y,
@@ -160,7 +148,7 @@ class CarEnv:
         elif len(self.collision_hist) != 0:
             done = True
             reward = -200
-        elif kmh < 10:
+        elif kmh < 1:
             done = False
             reward = -1
         else:
@@ -169,5 +157,43 @@ class CarEnv:
 
         if time.time()-self.episode_start>SECONDS_PER_EPISODE:
             done=True
+            reward = -200
 
-        return self.front_camera, reward, done, None
+        return self.front_camera, reward, done, measurements
+
+
+    def get_planner_command(self,current_point, end_point):
+        current_location = current_point.location
+        end_location = end_point.location
+        global_Dao = GlobalRoutePlannerDAO(self.map)
+        global_planner = GlobalRoutePlanner(global_Dao)
+        global_planner.setup()
+        commands = global_planner.abstract_route_plan(current_location, end_location)
+        direction = commands[0].value
+        return direction
+
+    def _get_measurements(self, current_point, end_point,v):
+
+        current_location=current_point.location
+        end_location=end_point.location
+        target_location_rel_x,target_location_rel_y = self.get_relative_location_target(current_location.x,current_location.y, 0.22,end_location.x, end_location.y)
+        direction=self.get_planner_command(current_point,end_point)
+        self.direction=direction
+        measurements=np.array([target_location_rel_x,target_location_rel_y,v.x,v.y,direction])
+        return measurements
+
+    def get_relative_location_target(self, loc_x, loc_y, loc_yaw, target_x, target_y):
+        veh_yaw = loc_yaw * np.pi / 180
+        veh_dir_world = np.array([np.cos(veh_yaw), np.sin(veh_yaw)])
+        veh_loc_world = np.array([loc_x, loc_y])
+        target_loc_world = np.array([target_x, target_y])
+        d_world = target_loc_world - veh_loc_world
+        dot = np.dot(veh_dir_world, d_world)
+        det = veh_dir_world[0] * d_world[1] - d_world[0] * veh_dir_world[1]
+        rel_angle = np.arctan2(det, dot)
+        target_location_rel_x = np.linalg.norm(d_world) * np.cos(rel_angle)
+        target_location_rel_y = np.linalg.norm(d_world) * np.sin(rel_angle)
+        target_rel_norm = np.linalg.norm(np.array([target_location_rel_x.item(), target_location_rel_y.item()]))
+        target_rel_x_unit = target_location_rel_x.item() / target_rel_norm
+        target_rel_y_unit = target_location_rel_y.item() / target_rel_norm
+        return target_rel_x_unit,target_rel_y_unit
