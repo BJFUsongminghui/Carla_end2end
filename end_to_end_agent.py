@@ -4,7 +4,7 @@ import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import end_to_end_carla312
+import end_to_end_carla
 import time
 import os
 actions = [[0., 0.,0.], [1.,0.,0], [0.5,0.,0], [0.25,0.,0],
