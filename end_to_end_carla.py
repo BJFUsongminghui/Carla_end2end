@@ -20,15 +20,11 @@ from agents.navigation.global_route_planner import GlobalRoutePlanner
 from agents.navigation.global_route_planner_dao import GlobalRoutePlannerDAO
 from collections import deque
 
-actions = [[0., 0.,0.], [1.,0.,0], [0.5,0.,0], [0.25,0.,0],
-           [0., -1.,0], [1., -1.,0], [0.5, -1.,0.0], [0.25, -1.,0],
-           [0., -0.5,0], [1., -0.5,0], [0.5, -0.5,0.0], [0.25, -0.5,0],
-           [0., -0.25,0], [1.,  -0.25,0], [0.5,  -0.25,0.0], [0.25, -0.25,0],
-           [0., 0.25,0], [1.,  0.25,0], [0.5,  0.25,0.0], [0.25, 0.25,0],
-           [0., 0.5,0], [1., 0.5,0], [0.5, 0.5,0.0], [0.25, 0.5,0],
-           [0., 1.,0], [1., 1.,0], [0.5, 1.,0.0], [0.25, 1.,0],
-           [0., 0.,0.5], [0., 0.,0.25],[0., 0.,1.0],
-           [0., 0.,0.15], [0., 0.,0.35],[0., 0.,0.75]]
+actions = [[0., 0.,0.],[0., -1.,0],[0., -0.5,0],[0., -0.25,0],[0., 0.25,0],[0., 0.5,0],[0., 1.,0],
+           [1.,0.,0],[1., -1.,0],[1., -0.5,0],[1.,  -0.25,0],[1.,  0.25,0],[1., 0.5,0],[1., 1.,0],
+           [0.5,0.,0], [0.5, -1.,0.0],[0.5, -0.5,0.0],[0.5,  -0.25,0.0],[0.5,  0.25,0.0],[0.5, 0.5,0.0],[0.5, 1.,0.0],
+           [0.25,0.,0], [0.25, -1.,0],[0.25, -0.5,0],[0.25, -0.25,0],[0.25, 0.25,0],[0.25, 0.5,0],[0.25, 1.,0],
+           [0., 0., 0.15], [0., 0.,0.25],[0., 0.,0.35],[0., 0.,0.5],[0., 0.,0.75],[0., 0.,1.0]]
 REPLAY_MEMORY_SIZE = 5_000
 
 SHOW_PREVIEW = False
@@ -57,6 +53,7 @@ class CarEnv:
         self.spawn_points = self.map.get_spawn_points()[:10]  # some points to begin
         self.end_points=self.map.get_spawn_points()[-10:]
     def reset(self):
+
         self.direction=0
         self.collision_hist = []
         self.actor_list = []
@@ -92,7 +89,7 @@ class CarEnv:
         v = self.vehicle.get_velocity()
         measurements = self._get_measurements(current_t, self.target_location, v)
 
-        return self.front_camera,measurements
+        return self.front_camera,measurements,self.direction
 
     def collision_data(self, event):
         self.collision_hist.append(event)
@@ -114,12 +111,6 @@ class CarEnv:
         throttle = self.actions[action][0]
         steer = self.actions[action][1] * self.STEER_AMT
         brake = self.actions[action][2]
-        if self.direction == 1:
-            steer=-1.0
-        elif self.direction == 2:
-            steer=1.0
-        elif self.direction ==3:
-            steer=0.0
 
         self.vehicle.apply_control(carla.VehicleControl(throttle=throttle,
                                                             steer=steer,
@@ -148,7 +139,7 @@ class CarEnv:
         elif len(self.collision_hist) != 0:
             done = True
             reward = -200
-        elif kmh < 1:
+        elif kmh < 1 or kmh>90:
             done = False
             reward = -1
         else:
@@ -159,7 +150,7 @@ class CarEnv:
             done=True
             reward = -200
 
-        return self.front_camera, reward, done, measurements
+        return self.front_camera, reward, done, measurements,self.direction
 
 
     def get_planner_command(self,current_point, end_point):
@@ -176,10 +167,31 @@ class CarEnv:
 
         current_location=current_point.location
         end_location=end_point.location
-        target_location_rel_x,target_location_rel_y = self.get_relative_location_target(current_location.x,current_location.y, 0.22,end_location.x, end_location.y)
+        target_location_rel_x,target_location_rel_y = self.get_relative_location_target(current_location.x,current_location.y, current_point.rotation.yaw,end_location.x, end_location.y)
         direction=self.get_planner_command(current_point,end_point)
         self.direction=direction
-        measurements=np.array([target_location_rel_x,target_location_rel_y,v.x,v.y,direction])
+        target_rel_norm = np.linalg.norm(np.array([target_location_rel_x.item(), target_location_rel_y.item()]))
+        target_rel_x_unit = target_location_rel_x.item() / target_rel_norm
+        target_rel_y_unit = target_location_rel_y.item() / target_rel_norm
+        acceleration=self.vehicle.get_acceleration()
+        measurements=np.array([
+            target_rel_y_unit,
+            target_rel_x_unit,
+            current_point.location.x/100.0,
+            current_point.location.y/100.0,
+            current_point.rotation.pitch/100.0,
+            current_point.rotation.yaw/100.0,
+            current_point.rotation.roll/100.0,
+            end_point.location.x/100.0,
+            end_point.location.y/100.0,
+            current_point.rotation.pitch/100.0,
+            current_point.rotation.yaw/100,
+            current_point.rotation.roll/100.0,
+            v.x*3.6/10,
+            v.y*3.6/10,
+            acceleration.x,
+            acceleration.y,
+            direction/6.0])
         return measurements
 
     def get_relative_location_target(self, loc_x, loc_y, loc_yaw, target_x, target_y):
@@ -193,7 +205,5 @@ class CarEnv:
         rel_angle = np.arctan2(det, dot)
         target_location_rel_x = np.linalg.norm(d_world) * np.cos(rel_angle)
         target_location_rel_y = np.linalg.norm(d_world) * np.sin(rel_angle)
-        target_rel_norm = np.linalg.norm(np.array([target_location_rel_x.item(), target_location_rel_y.item()]))
-        target_rel_x_unit = target_location_rel_x.item() / target_rel_norm
-        target_rel_y_unit = target_location_rel_y.item() / target_rel_norm
-        return target_rel_x_unit,target_rel_y_unit
+
+        return target_location_rel_x,target_location_rel_y

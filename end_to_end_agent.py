@@ -7,15 +7,11 @@ import torch.nn.functional as F
 import end_to_end_carla
 import time
 import os
-actions = [[0., 0.,0.], [1.,0.,0], [0.5,0.,0], [0.25,0.,0],
-           [0., -1.,0], [1., -1.,0], [0.5, -1.,0.0], [0.25, -1.,0],
-           [0., -0.5,0], [1., -0.5,0], [0.5, -0.5,0.0], [0.25, -0.5,0],
-           [0., -0.25,0], [1.,  -0.25,0], [0.5,  -0.25,0.0], [0.25, -0.25,0],
-           [0., 0.25,0], [1.,  0.25,0], [0.5,  0.25,0.0], [0.25, 0.25,0],
-           [0., 0.5,0], [1., 0.5,0], [0.5, 0.5,0.0], [0.25, 0.5,0],
-           [0., 1.,0], [1., 1.,0], [0.5, 1.,0.0], [0.25, 1.,0],
-           [0., 0.,0.5], [0., 0.,0.25],[0., 0.,1.0],
-           [0., 0.,0.15], [0., 0.,0.35],[0., 0.,0.75]]
+actions = [[0., 0.,0.],[0., -1.,0],[0., -0.5,0],[0., -0.25,0],[0., 0.25,0],[0., 0.5,0],[0., 1.,0],
+           [1.,0.,0],[1., -1.,0],[1., -0.5,0],[1.,  -0.25,0],[1.,  0.25,0],[1., 0.5,0],[1., 1.,0],
+           [0.5,0.,0], [0.5, -1.,0.0],[0.5, -0.5,0.0],[0.5,  -0.25,0.0],[0.5,  0.25,0.0],[0.5, 0.5,0.0],[0.5, 1.,0.0],
+           [0.25,0.,0], [0.25, -1.,0],[0.25, -0.5,0],[0.25, -0.25,0],[0.25, 0.25,0],[0.25, 0.5,0],[0.25, 1.,0],
+           [0., 0., 0.15], [0., 0.,0.25],[0., 0.,0.35],[0., 0.,0.5],[0., 0.,0.75],[0., 0.,1.0]]
 class Net(nn.Module):
     def __init__(self, in_channels=3, n_actions=len(actions)):
         """
@@ -34,7 +30,7 @@ class Net(nn.Module):
         self.bn3 = nn.BatchNorm2d(64)
 
         self.fc_backbone = nn.Sequential(
-            nn.Linear(5, 4),
+            nn.Linear(17, 4),
             nn.ReLU(),
             nn.Linear(4, 512 // 2),
             nn.ReLU(),
@@ -63,7 +59,7 @@ class Net(nn.Module):
         out3 = self.head(x)
         return out3
 
-REPLAY_MEMORY_SIZE = 3000
+REPLAY_MEMORY_SIZE = 4000
 MIN_REPLAY_MEMORY_SIZE = 200
 MINIBATCH_SIZE = 32
 LR = 0.01
@@ -113,19 +109,16 @@ class DQNAgent:
         cur_v = self.model(current_state,cur_measurements).gather(1, action)
         # get new_state and train get target_q
         new_state = torch.tensor([t[3] for t in minibatch]).float()
-        done=torch.tensor([t[4] for t in minibatch])
+        done=torch.tensor([t[4] for t in minibatch]).int()
 
         measurements = torch.tensor([t[6] for t in minibatch])
         future_v=self.target_model(new_state,measurements).max(1)[0]
-        target_v=reward+self.gamma*future_v
-        '''for index in range(len(reward)):
-            if not done[index]:
-                target_v[index]=reward[index]+self.gamma*future_v[index]
-                print(target_v[index])
-
-        with torch.no_grad():
-            target_v1 = reward + self.gamma * self.target_model(new_state).max(1)[0]
-        # update model
+        target_v=reward+self.gamma*future_v*(1-done)
+        '''
+        soft  q 
+        
+        next_value=torch.logsumexp(new_value,0)
+        target_v=reward+(1-done)*self.gamma*next_value
         '''
         cur_v1 = cur_v.reshape(MINIBATCH_SIZE)
         loss = self.loss_func(cur_v1, target_v)
@@ -141,7 +134,7 @@ class DQNAgent:
         if self.target_update_counter % UPDATE_TARGER_EVERY == 0:
             self.target_model.load_state_dict(self.model.state_dict())
 
-    def get_action(self, state,measurements, episode):
+    def get_action(self, state,measurements,direction, episode):
         ran_num=epsilon - episode * epsilon_decy
         if ran_num<epsilon_min:
             ran_num=epsilon_min
@@ -155,36 +148,35 @@ class DQNAgent:
             # action=np.argmax(value)
             action_max_value, index = torch.max(value, 1)
             action = index.item()
-
+            if direction == 1:
+                action = 1
+            elif direction == 2:
+                action = 6 # [0,1,0]
+            elif direction == 3:
+                action = 0
             return action
-
-    def get_contorl(self,state,measurements,direction):
-        state = torch.tensor(state).unsqueeze(0)
-        measurements = torch.tensor(measurements).unsqueeze(0)
-        value = self.model(state, measurements)
 
 
 def main():
     if not os.path.isdir('models'):
         os.makedirs('models')
-    env = end_to_end_carla312.CarEnv()
+    env = end_to_end_carla.CarEnv()
     agent = DQNAgent(env.action_space_size)
 
     for episode in range(EPISODES):
         env.collision_hist = []
 
         episode_reward = 0
-        current_state, cur_measurements= env.reset()
+        current_state, cur_measurements,direction= env.reset()
 
         episode_start = time.time()
         do_trian = 1
         while True:
-            action = agent.get_action(current_state,cur_measurements, episode)
-            new_state, reward, done, measurements = env.step(action)
-
+            action = agent.get_action(current_state,cur_measurements,direction, episode)
+            new_state, reward, done, measurements ,direction= env.step(action)
             episode_reward += reward
             agent.update_replay_memory((current_state, action, reward, new_state, done,cur_measurements,measurements))
-            if do_trian % 20 == 0:
+            if do_trian % 10 == 0:
                 agent.train()
                 time.sleep(0.01)
                 do_trian = 0
