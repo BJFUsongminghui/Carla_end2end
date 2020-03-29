@@ -7,11 +7,7 @@ import torch.nn.functional as F
 import end_to_end_carla
 import time
 import os
-actions = [[0., 0.,0.],[0., -1.,0],[0., -0.5,0],[0., -0.25,0],[0., 0.25,0],[0., 0.5,0],[0., 1.,0],
-           [1.,0.,0],[1., -1.,0],[1., -0.5,0],[1.,  -0.25,0],[1.,  0.25,0],[1., 0.5,0],[1., 1.,0],
-           [0.5,0.,0], [0.5, -1.,0.0],[0.5, -0.5,0.0],[0.5,  -0.25,0.0],[0.5,  0.25,0.0],[0.5, 0.5,0.0],[0.5, 1.,0.0],
-           [0.25,0.,0], [0.25, -1.,0],[0.25, -0.5,0],[0.25, -0.25,0],[0.25, 0.25,0],[0.25, 0.5,0],[0.25, 1.,0],
-           [0., 0., 0.15], [0., 0.,0.25],[0., 0.,0.35],[0., 0.,0.5],[0., 0.,0.75],[0., 0.,1.0]]
+actions = end_to_end_carla.actions
 class Net(nn.Module):
     def __init__(self, in_channels=3, n_actions=len(actions)):
         """
@@ -30,7 +26,7 @@ class Net(nn.Module):
         self.bn3 = nn.BatchNorm2d(64)
 
         self.fc_backbone = nn.Sequential(
-            nn.Linear(17, 4),
+            nn.Linear(20, 4),
             nn.ReLU(),
             nn.Linear(4, 512 // 2),
             nn.ReLU(),
@@ -59,7 +55,7 @@ class Net(nn.Module):
         out3 = self.head(x)
         return out3
 
-REPLAY_MEMORY_SIZE = 4000
+REPLAY_MEMORY_SIZE = 5000
 MIN_REPLAY_MEMORY_SIZE = 200
 MINIBATCH_SIZE = 32
 LR = 0.01
@@ -148,12 +144,6 @@ class DQNAgent:
             # action=np.argmax(value)
             action_max_value, index = torch.max(value, 1)
             action = index.item()
-            if direction == 1:
-                action = 1
-            elif direction == 2:
-                action = 6 # [0,1,0]
-            elif direction == 3:
-                action = 0
             return action
 
 
